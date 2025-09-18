@@ -38,7 +38,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'test',
-    'drf_spectacular'
+    'ninja'
 ]
 
 MIDDLEWARE = [
@@ -54,7 +54,7 @@ MIDDLEWARE = [
 ROOT_URLCONF = 'todo.urls'
 
 
-
+AUTH_USER_MODEL = "test.User"
 
 
 TEMPLATES = [
@@ -128,25 +128,5 @@ STATIC_URL = 'static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
-REST_FRAMEWORK = {
-    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
-    'DEFAULT_PERMISSION_CLASSES': [
-        'rest_framework.permissions.AllowAny',
-    ],
-    'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
-    ],
-}
 
 
-
-SPECTACULAR_SETTINGS = {
-    "TITLE": "Todo API",
-    "VERSION": "1.0.0",
-    "DESCRIPTION": "API for Todo operations",
-    "SERVE_INCLUDE_SCHEMA": False,
-    "SECURITY": [{"BearerAuth": []}], 
-    "SWAGGER_UI_SETTINGS": {
-        "defaultModelsExpandDepth": -1  
-    },
-}

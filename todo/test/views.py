@@ -1,139 +1,125 @@
-# test/views.py
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status, permissions
-from django.contrib.auth.models import User
-from django.contrib.auth import authenticate
-from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework_simplejwt.authentication import JWTAuthentication
-from .models import Todo
-from .serializers import TodoSerializer, RegisterRequestSerializer
-from drf_spectacular.utils import extend_schema, OpenApiResponse
-from drf_spectacular.openapi import AutoSchema
+from ninja import NinjaAPI, Router
+from .models import User, Todo
+from .serializers import RegisterSchema, LoginSchema, TodoSchema, TodoUpdateSchema
+from rest_framework_simplejwt.tokens import RefreshToken, UntypedToken
+from django.shortcuts import get_object_or_404
+from typing import List, Dict
+from django.contrib.auth import get_user_model
 
-# -------------------
-# Custom Authentication to read JWT from cookie
-# -------------------
-class CookieJWTAuthentication(JWTAuthentication):
-    def authenticate(self, request):
-        raw_token = request.COOKIES.get("access_token")
-        if raw_token is None:
-            return None
-        validated_token = self.get_validated_token(raw_token)
-        return self.get_user(validated_token), validated_token
+api = NinjaAPI()
+router = Router()
+User = get_user_model()
 
-# -------------------
-# Register Endpoint
-# -------------------
-@extend_schema(
-    request=RegisterRequestSerializer,
-    responses={201: OpenApiResponse(description="User created successfully")}
-)
-class RegisterAPIView(APIView):
-    permission_classes = [permissions.AllowAny]
-    schema = AutoSchema()
+# ---------------- Helper Functions ----------------
+def get_user_from_token(token: str):
+    try:
+        untoken = UntypedToken(token)  # يتحقق من صلاحية الـ JWT
+        user_id = untoken["user_id"]
+        return User.objects.get(id=user_id)
+    except Exception as e:
+        print("JWT error:", e)
+        return None
 
-    def post(self, request):
-        serializer = RegisterRequestSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+def auth_required(request):
+    """
+    🔹 يتحقق من Authorization header أولًا
+    🔹 إذا غير موجود، يتحقق من access_token cookie
+    """
+    token = None
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
 
-        email = serializer.validated_data['email']
-        password = serializer.validated_data['password']
+    if not token:
+        token = request.COOKIES.get("access_token")
 
-        if User.objects.filter(username=email).exists():
-            return Response({"error": "User already exists"}, status=status.HTTP_400_BAD_REQUEST)
+    if not token:
+        return None
 
-        User.objects.create_user(username=email, email=email, password=password)
-        return Response({"message": "User created"}, status=status.HTTP_201_CREATED)
+    return get_user_from_token(token)
 
+# ---------------- Register ----------------
+@router.post("/register", response={201: Dict, 400: Dict})
+def register(request, payload: RegisterSchema):
+    if User.objects.filter(email=payload.email).exists():
+        return 400, {"error": "User already exists"}
+    User.objects.create_user(email=payload.email, password=payload.password)
+    return 201, {"message": "User created"}
 
-@extend_schema(
-    request=RegisterRequestSerializer,
-    responses={200: OpenApiResponse(description="Login successful with JWT tokens")}
-)
-class LoginAPIView(APIView):
-    permission_classes = [permissions.AllowAny]
-    schema = AutoSchema()
+# ---------------- Login ----------------
+@router.post("/login", response={200: Dict, 400: Dict})
+def login(request, payload: LoginSchema):
+    try:
+        user = User.objects.get(email=payload.email)
+        if not user.check_password(payload.password):
+            return 400, {"error": "Invalid credentials"}
+    except User.DoesNotExist:
+        return 400, {"error": "Invalid credentials"}
 
-    def post(self, request):
-        serializer = RegisterRequestSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+    refresh = RefreshToken.for_user(user)
+    access_token = str(refresh.access_token)
 
-        email = serializer.validated_data['email']
-        password = serializer.validated_data['password']
+    response = api.create_response(
+        request,
+        {"message": "Login successful"},
+        status=200
+    )
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,   # لا يمكن قراءتها من JS
+        secure=False,    # ضع True إذا تستخدم HTTPS
+        samesite="Lax",
+        path="/",
+        max_age=60*60
+    )
+    return response
 
-        user = authenticate(username=email, password=password)
-        if not user:
-            return Response({"error": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED)
+# ---------------- Todos ----------------
+@router.get("/todos", response={200: List[TodoSchema], 401: Dict})
+def list_todos(request):
+    user = auth_required(request)
+    if not user:
+        return 401, {"error": "Authentication required"}
+    return 200, Todo.objects.filter(user=user)
 
-        refresh = RefreshToken.for_user(user)
-        access_token = str(refresh.access_token)
+@router.post("/todos", response={201: TodoSchema, 401: Dict})
+def create_todo(request, payload: TodoSchema):
+    user = auth_required(request)
+    if not user:
+        return 401, {"error": "Authentication required"}
+    todo = Todo.objects.create(user=user, **payload.dict())
+    return 201, todo
 
-        response = Response({"message": "Login successful"})
-        response.set_cookie(
-            key="access_token",
-            value=access_token,
-            httponly=True,
-            samesite='Lax',  # يمكن تغييره حسب حاجتك
-            max_age=3600      # صلاحية التوكن بالثواني
-        )
-        return response
+@router.put("/todos/{todo_id}", response={200: TodoSchema, 401: Dict})
+def update_todo(request, todo_id: int, payload: TodoUpdateSchema):
+    user = auth_required(request)
+    if not user:
+        return 401, {"error": "Authentication required"}
+    todo = get_object_or_404(Todo, id=todo_id, user=user)
+    for k, v in payload.dict(exclude_unset=True).items():
+        setattr(todo, k, v)
+    todo.save()
+    return 200, todo
 
-# -------------------
-# Todos List + Create
-# -------------------
-@extend_schema(
-    request=TodoSerializer,
-    responses={200: OpenApiResponse(TodoSerializer)},
-    description="List and Create todos"
-)
-class TodoListCreateAPIView(APIView):
-    authentication_classes = [CookieJWTAuthentication]
-    permission_classes = [permissions.IsAuthenticated]
-    schema = AutoSchema()
+@router.delete("/todos/{todo_id}", response={200: Dict, 401: Dict})
+def delete_todo(request, todo_id: int):
+    user = auth_required(request)
+    if not user:
+        return 401, {"error": "Authentication required"}
+    todo = get_object_or_404(Todo, id=todo_id, user=user)
+    todo.delete()
+    return 200, {"message": "Todo deleted"}
 
-    def get(self, request):
-        todos = Todo.objects.filter(user=request.user)
-        serializer = TodoSerializer(todos, many=True)
-        return Response(serializer.data)
+@router.delete("/todos/reset", response={200: Dict, 401: Dict, 403: Dict})
+def reset_todos(request):
+    user = auth_required(request)
+    if not user:
+        return 401, {"error": "Authentication required"}
+    if user.role != "admin":
+        return 403, {"error": "Admin access required"}
+    Todo.objects.all().delete()
+    return 200, {"message": "All TODOs deleted"}
 
-    def post(self, request):
-        serializer = TodoSerializer(data=request.data)
-        if serializer.is_valid():
-            todo = Todo.objects.create(user=request.user, **serializer.validated_data)
-            return Response(TodoSerializer(todo).data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
-
-# -------------------
-# Todo Update + Delete
-# -------------------
-@extend_schema(
-    request=TodoSerializer,
-    responses={200: OpenApiResponse(TodoSerializer)},
-    description="Update or Delete a todo"
-)
-class TodoUpdateDeleteAPIView(APIView):
-    authentication_classes = [CookieJWTAuthentication]
-    permission_classes = [permissions.IsAuthenticated]
-    schema = AutoSchema()
-
-    def put(self, request, todo_id):
-        try:
-            todo = Todo.objects.get(id=todo_id, user=request.user)
-        except Todo.DoesNotExist:
-            return Response({"error": "Todo not found"}, status=status.HTTP_404_NOT_FOUND)
-
-        serializer = TodoSerializer(todo, data=request.data, partial=True)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-    def delete(self, request, todo_id):
-        try:
-            todo = Todo.objects.get(id=todo_id, user=request.user)
-            todo.delete()
-            return Response({"message": "Todo deleted"})
-        except Todo.DoesNotExist:
-            return Response({"error": "Todo not found"}, status=status.HTTP_404_NOT_FOUND)
+# ---------------- Register Router ----------------
+api.add_router("/api/", router)

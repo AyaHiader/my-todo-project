@@ -1,29 +1,26 @@
 # test/serializers.py
-from rest_framework import serializers
-from .models import Todo
+from ninja import Schema
+from typing import Optional
+from datetime import date
 
-# -------------------
-# Todo Serializer
-# -------------------
-class TodoSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Todo
-        fields = ['id', 'title', 'description', 'start_date', 'end_date', 'status']
+class RegisterSchema(Schema):
+    email: str
+    password: str
 
-# -------------------
-# Register Request Serializer (for Swagger input)
-# -------------------
-class RegisterRequestSerializer(serializers.Serializer):
-    email = serializers.EmailField()
-    password = serializers.CharField(write_only=True)
+class LoginSchema(Schema):
+    email: str
+    password: str
 
-# -------------------
-# Register Response Serializer (for Swagger output)
-# -------------------
-class RegisterResponseSerializer(serializers.Serializer):
-    message = serializers.CharField()
-    refresh = serializers.CharField()
-    access = serializers.CharField()
+class TodoSchema(Schema):
+    title: str
+    description: Optional[str]
+    start_date: date
+    end_date: date
+    status: str  # "todo", "inprogress", "done"
 
-
-
+class TodoUpdateSchema(Schema):
+    title: Optional[str]
+    description: Optional[str]
+    start_date: Optional[date]
+    end_date: Optional[date]
+    status: Optional[str]
